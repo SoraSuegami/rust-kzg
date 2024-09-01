@@ -428,21 +428,39 @@ pub fn compute_kzg_proof_rust<
     z: &TFr,
     s: &TKZGSettings,
 ) -> Result<(TG1, TFr), String> {
-    let polynomial = blob_to_polynomial(blob)?;
-    let y = evaluate_polynomial_in_evaluation_form(&polynomial, z, s)?;
+    compute_kzg_proof_rust_generic_len(blob, z, s)
+}
+
+pub fn compute_kzg_proof_rust_generic_len<
+    TFr: Fr + Copy,
+    TG1: G1 + G1Mul<TFr> + G1GetFp<TG1Fp> + G1LinComb<TFr, TG1Fp, TG1Affine>,
+    TG2: G2,
+    TFFTSettings: FFTSettings<TFr>,
+    TPoly: Poly<TFr>,
+    TKZGSettings: KZGSettings<TFr, TG1, TG2, TFFTSettings, TPoly, TG1Fp, TG1Affine>,
+    TG1Fp: G1Fp,
+    TG1Affine: G1Affine<TG1, TG1Fp>,
+>(
+    blob: &[TFr],
+    z: &TFr,
+    s: &TKZGSettings,
+) -> Result<(TG1, TFr), String> {
+    let polynomial: TPoly = blob_to_polynomial_generic_len(blob)?;
+    let len = polynomial.len();
+    let y = evaluate_polynomial_in_evaluation_form_generic_len(&polynomial, z, s)?;
 
     let mut tmp: TFr;
 
     let mut m: usize = 0;
-    let mut q: TPoly = TPoly::new(FIELD_ELEMENTS_PER_BLOB);
+    let mut q: TPoly = TPoly::new(len);
 
-    let mut inverses_in: Vec<TFr> = vec![TFr::default(); FIELD_ELEMENTS_PER_BLOB];
-    let mut inverses: Vec<TFr> = vec![TFr::default(); FIELD_ELEMENTS_PER_BLOB];
+    let mut inverses_in: Vec<TFr> = vec![TFr::default(); len];
+    let mut inverses: Vec<TFr> = vec![TFr::default(); len];
 
     let roots_of_unity = s.get_fft_settings().get_roots_of_unity();
     let poly_coeffs = polynomial.get_coeffs();
 
-    for i in 0..FIELD_ELEMENTS_PER_BLOB {
+    for i in 0..len {
         if z.equals(&roots_of_unity[i]) {
             // We are asked to compute a KZG proof inside the domain
             m = i + 1;
@@ -454,9 +472,9 @@ pub fn compute_kzg_proof_rust<
         inverses_in[i] = roots_of_unity[i].sub(z);
     }
 
-    fr_batch_inv(&mut inverses, &inverses_in, FIELD_ELEMENTS_PER_BLOB)?;
+    fr_batch_inv(&mut inverses, &inverses_in, len)?;
 
-    for (i, inverse) in inverses.iter().enumerate().take(FIELD_ELEMENTS_PER_BLOB) {
+    for (i, inverse) in inverses.iter().enumerate().take(len) {
         q.set_coeff_at(i, &q.get_coeff_at(i).mul(inverse));
     }
 
@@ -464,7 +482,7 @@ pub fn compute_kzg_proof_rust<
         // ω_{m-1} == z
         m -= 1;
         q.set_coeff_at(m, &TFr::zero());
-        for i in 0..FIELD_ELEMENTS_PER_BLOB {
+        for i in 0..len {
             if i == m {
                 continue;
             }
@@ -473,9 +491,9 @@ pub fn compute_kzg_proof_rust<
             inverses_in[i] = tmp.mul(z);
         }
 
-        fr_batch_inv(&mut inverses, &inverses_in, FIELD_ELEMENTS_PER_BLOB)?;
+        fr_batch_inv(&mut inverses, &inverses_in, len)?;
 
-        for i in 0..FIELD_ELEMENTS_PER_BLOB {
+        for i in 0..len {
             if i == m {
                 continue;
             }
@@ -491,7 +509,7 @@ pub fn compute_kzg_proof_rust<
     let proof = TG1::g1_lincomb(
         s.get_g1_secret(),
         q.get_coeffs(),
-        FIELD_ELEMENTS_PER_BLOB,
+        len,
         s.get_precomputation(),
     );
     Ok((proof, y))
@@ -797,6 +815,12 @@ pub fn blob_to_polynomial<TFr: Fr, TPoly: Poly<TFr>>(blob: &[TFr]) -> Result<TPo
     if blob.len() != FIELD_ELEMENTS_PER_BLOB {
         return Err(String::from("Blob length must be FIELD_ELEMENTS_PER_BLOB"));
     }
+    blob_to_polynomial_generic_len(blob)
+}
+
+pub fn blob_to_polynomial_generic_len<TFr: Fr, TPoly: Poly<TFr>>(
+    blob: &[TFr],
+) -> Result<TPoly, String> {
     Ok(TPoly::from_coeffs(blob))
 }
 
@@ -817,37 +841,54 @@ pub fn evaluate_polynomial_in_evaluation_form<
     if p.len() != FIELD_ELEMENTS_PER_BLOB {
         return Err(String::from("Incorrect field elements count."));
     }
+    evaluate_polynomial_in_evaluation_form_generic_len(p, x, s)
+}
 
-    let mut inverses_in: Vec<TFr> = vec![TFr::default(); FIELD_ELEMENTS_PER_BLOB];
-    let mut inverses: Vec<TFr> = vec![TFr::default(); FIELD_ELEMENTS_PER_BLOB];
+pub fn evaluate_polynomial_in_evaluation_form_generic_len<
+    TFr: Fr + Copy,
+    TG1: G1 + G1GetFp<TG1Fp> + G1Mul<TFr>,
+    TG2: G2,
+    TPoly: Poly<TFr>,
+    TFFTSettings: FFTSettings<TFr>,
+    TKZGSettings: KZGSettings<TFr, TG1, TG2, TFFTSettings, TPoly, TG1Fp, TG1Affine>,
+    TG1Fp: G1Fp,
+    TG1Affine: G1Affine<TG1, TG1Fp>,
+>(
+    p: &TPoly,
+    x: &TFr,
+    s: &TKZGSettings,
+) -> Result<TFr, String> {
+    let len = p.len();
+    let mut inverses_in: Vec<TFr> = vec![TFr::default(); len];
+    let mut inverses: Vec<TFr> = vec![TFr::default(); len];
 
     let roots_of_unity = s.get_fft_settings().get_roots_of_unity();
     let poly_coeffs = p.get_coeffs();
 
-    for i in 0..FIELD_ELEMENTS_PER_BLOB {
+    for i in 0..len {
         if x == &roots_of_unity[i] {
             return Ok(poly_coeffs[i]);
         }
         inverses_in[i] = x.sub(&roots_of_unity[i]);
     }
 
-    fr_batch_inv(&mut inverses, &inverses_in, FIELD_ELEMENTS_PER_BLOB)?;
+    fr_batch_inv(&mut inverses, &inverses_in, len)?;
 
     let mut tmp: TFr;
     let mut out = TFr::zero();
 
-    for i in 0..FIELD_ELEMENTS_PER_BLOB {
+    for i in 0..len {
         tmp = inverses[i].mul(&roots_of_unity[i]);
         tmp = tmp.mul(&poly_coeffs[i]);
         out = out.add(&tmp);
     }
 
-    tmp = TFr::from_u64(FIELD_ELEMENTS_PER_BLOB as u64);
+    tmp = TFr::from_u64(len as u64);
     out = match out.div(&tmp) {
         Ok(value) => value,
         Err(err) => return Err(err),
     };
-    tmp = x.pow(FIELD_ELEMENTS_PER_BLOB);
+    tmp = x.pow(len);
     tmp = tmp.sub(&TFr::one());
     out = out.mul(&tmp);
     Ok(out)
